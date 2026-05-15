@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "local-code-assistant": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "local-code-assistant",
+        "lca-mcp",
+        "--repo",
+        "/Users/fran/code/ai/local_code_assistant"
+      ],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
+

@@ -1,0 +1,17 @@
+[project]
+name = "local-code-assistant"
+version = "0.1.0"
+description = "Local code assistant using Ollama and repository tools"
+requires-python = ">=3.11"
+dependencies = [
+    "rich>=13.0.0",
+    "fastmcp>=2.0.0",
+]
+
+[project.scripts]
+local-code-assistant = "local_code_assistant.cli:main"
+local-code-assistant-mcp = "local_code_assistant.mcp_server_standalone:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
