@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Optional
 
 from rich.console import Console
 from rich.table import Table
@@ -20,10 +21,11 @@ console = Console()
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Local code assistant using Ollama")
-    parser.add_argument("--model", default="qwen3-coder")
+    parser.add_argument("--model", default="qwen3-coder:30b")
     parser.add_argument("--host", default="http://localhost:11434")
-    parser.add_argument("--num-ctx", type=int, default=8192)
+    parser.add_argument("--num-ctx", type=int, default=32768)
     parser.add_argument("--temperature", type=float, default=0.1)
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose console feedback")
 
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -50,9 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_agent = sub.add_parser("agent", help="Run tool-calling code agent")
     p_agent.add_argument("--repo", default=".")
     p_agent.add_argument("--question", default=None)
-    p_agent.add_argument("--max-steps", type=int, default=20)
-    p_agent.add_argument("--auto-files", type=int, default=20)
+    p_agent.add_argument("--max-steps", type=int, default=100)
+    p_agent.add_argument("--auto-files", type=int, default=60)
     p_agent.add_argument("--no-force-edit", action="store_true", help="Do not fallback to patch generation/application")
+    p_agent.add_argument("--confirm", "-c", action="store_true", help="Ask for confirmation before each file modification, showing a diff preview")
+    p_agent.add_argument("--auto-test", action="store_true", help="After each successful edit, run pytest / dotnet build / npm test and feed the result to the model")
     p_agent.add_argument("--interactive", "-i", action="store_true", help="Keep asking questions in a REPL with accumulated context")
     p_agent.add_argument("--clear-command", default="/clear", help="Command that clears interactive context")
     p_agent.add_argument("--exit-command", default="/exit", help="Command that exits interactive mode")
@@ -82,10 +86,10 @@ def cmd_index(args: argparse.Namespace) -> None:
     console.print(table)
 
 
-def resolve_files(repo: Path, provided: list[str], question: str, auto_count: int) -> list[str]:
+def resolve_files(repo: Path, provided: list[str], question: str, auto_count: int, client:Optional[OllamaClient]) -> list[str]:
     if provided:
         return provided
-    selected = auto_select_files(repo, question, max_files=auto_count)
+    selected = auto_select_files(repo, question, max_files=auto_count,client=client)
     if not selected:
         selected = [f.rel_path for f in scan_repo(repo, max_files=auto_count)]
     return selected
@@ -93,19 +97,19 @@ def resolve_files(repo: Path, provided: list[str], question: str, auto_count: in
 
 def cmd_ask(args: argparse.Namespace) -> None:
     repo = Path(args.repo).resolve()
-    files = resolve_files(repo, args.files, args.question, args.auto_files)
+    files = resolve_files(repo, args.files, args.question, args.auto_files, client=make_client(args))
     context = read_files(repo, files)
     prompt = f"""
-Repository: {repo}
-Selected files:
-{chr(10).join('- ' + f for f in files)}
-
-User question:
-{args.question}
-
-Code context:
-{context}
-""".strip()
+                Repository: {repo}
+                Selected files:
+                {chr(10).join('- ' + f for f in files)}
+                
+                User question:
+                {args.question}
+                
+                Code context:
+                {context}
+                """.strip()
     console.print(f"[bold]Selected files:[/bold] {', '.join(files)}")
     answer = make_client(args).generate(prompt, system=SYSTEM_PROMPT)
     console.print(answer)
@@ -113,7 +117,7 @@ Code context:
 
 def cmd_patch(args: argparse.Namespace) -> None:
     repo = Path(args.repo).resolve()
-    files = resolve_files(repo, args.files, args.question, args.auto_files)
+    files = resolve_files(repo, args.files, args.question, args.auto_files, client=make_client(args))
     context = read_files(repo, files)
     prompt = f"""
 Repository: {repo}
@@ -149,11 +153,16 @@ def cmd_agent(args: argparse.Namespace) -> None:
         max_steps=args.max_steps,
         auto_files=args.auto_files,
         force_edit=not args.no_force_edit,
+        verbose=args.verbose,
+        confirm_edits=args.confirm,
+        auto_test=args.auto_test,
     )
 
     if args.interactive:
         console.print(f"[bold]Interactive agent[/bold] repo={repo}")
         console.print(f"Type [bold]{args.clear_command}[/bold] to clear context, [bold]{args.exit_command}[/bold] to exit.")
+        if args.verbose:
+            console.print(f"[dim]Verbose mode: ON [Use --verbose/-v to disable][/dim]")
         if args.question:
             console.print(agent.run(args.question, keep_context=True))
 

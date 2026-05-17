@@ -12,7 +12,7 @@ class OllamaConfig:
     model: str = "qwen3-coder"#"deepseek-coder:6.7b"
     host: str = "http://localhost:11434"
     temperature: float = 0.1
-    num_ctx: int = 8192
+    num_ctx: int = 32768
 
 
 def clean_schema(schema: Any) -> Any:
@@ -139,6 +139,7 @@ class OllamaClient:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         url = f"{self.config.host.rstrip('/')}/api/chat"
 
@@ -147,7 +148,7 @@ class OllamaClient:
             "messages": messages,
             "stream": False,
             "options": {
-                "temperature": self.config.temperature,
+                "temperature": self.config.temperature if temperature is None else temperature,
                 "num_ctx": self.config.num_ctx,
             },
         }
@@ -187,11 +188,17 @@ class OllamaClient:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
     ) -> str:
-        body = self.chat_raw(messages, tools=tools)
+        body = self.chat_raw(messages, tools=tools, temperature=temperature)
         return body.get("message", {}).get("content", "")
 
-    def generate(self, prompt: str, system: str | None = None) -> str:
+    def generate(
+        self,
+        prompt: str,
+        system: str | None = None,
+        temperature: float | None = None,
+    ) -> str:
         messages: list[dict[str, Any]] = []
 
         if system:
@@ -209,4 +216,4 @@ class OllamaClient:
             }
         )
 
-        return self.chat(messages)
+        return self.chat(messages, temperature=temperature)

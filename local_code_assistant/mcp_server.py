@@ -9,10 +9,10 @@ from fastmcp.server import FastMCP
 
 from .repo import (
     auto_select_files,
+    auto_select_files_by_embeddings,
     read_files,
     scan_repo,
 )
-
 server = FastMCP("local-code-assistant")
 _repo_root: Path | None = None
 
@@ -256,14 +256,87 @@ def search_files(pattern: str, directory: str = ".") -> str:
 
 @server.tool()
 def auto_find_relevant_files(question: str, max_files: int = 20) -> str:
-    """Select relevant files based on a query/question."""
+    """Select relevant files based on cosine similarity between question embedding and file path/content embeddings."""
     if not question:
         return "Question is required"
 
-    selected = auto_select_files(get_repo_root(), question, max_files=max_files)
-    lines = [f"Selected {len(selected)} files:"]
-    lines.extend(f"  {f}" for f in selected)
-    return "\n".join(lines)
+    try:
+        selected = auto_select_files_by_embeddings(
+            get_repo_root(),
+            question,
+            max_files=max_files,
+            candidate_limit=300,
+            embedding_model="nomic-embed-text",
+            ollama_host="http://localhost:11434",
+        )
+
+        lines = [f"Selected {len(selected)} files by embedding similarity:"]
+        for path, score in selected:
+            lines.append(f"  {score:.4f}  {path}")
+
+        return "\n".join(lines)
+
+    except Exception as exc:
+        selected = auto_select_files(get_repo_root(), question, max_files=max_files)
+        lines = [
+            f"Embedding selection failed: {exc}",
+            f"Falling back to lexical selection. Selected {len(selected)} files:",
+        ]
+        lines.extend(f"  {f}" for f in selected)
+        return "\n".join(lines)
+
+@server.tool()
+def edit_file(path: str, search: str, replace: str) -> str:
+    """
+    Modify an existing file by exact search-and-replace.
+
+    `search` must be a unique contiguous substring of the current file (copy it
+    verbatim from read_file output, including indentation). The first matching
+    occurrence is replaced with `replace`. Falls back to a line-ending-normalized
+    match if the strict match fails.
+
+    This is the PREFERRED edit primitive for local LLMs — no line numbers, no
+    hunk headers. Use apply_patch only when an edit spans many files.
+    """
+    if not search:
+        return "Edit failed: 'search' must be a non-empty string"
+
+    full_path = _ensure_relative(path)
+    if not full_path.exists():
+        return f"Edit failed: file not found: {full_path}"
+    if not full_path.is_file():
+        return f"Edit failed: not a regular file: {full_path}"
+
+    original = full_path.read_text(encoding="utf-8", errors="replace")
+
+    count = original.count(search)
+    if count == 1:
+        full_path.write_text(original.replace(search, replace, 1), encoding="utf-8")
+        return f"Edit applied (exact): {path}"
+    if count > 1:
+        return (
+            f"Edit failed: 'search' matched {count} times in {path}. "
+            "Add more surrounding context so the match is unique."
+        )
+
+    norm_search = search.replace("\r\n", "\n").replace("\r", "\n")
+    norm_original = original.replace("\r\n", "\n").replace("\r", "\n")
+    n_count = norm_original.count(norm_search)
+    if n_count == 1:
+        new = norm_original.replace(norm_search, replace.replace("\r\n", "\n"), 1)
+        full_path.write_text(new, encoding="utf-8")
+        return f"Edit applied (normalized line endings): {path}"
+    if n_count > 1:
+        return (
+            f"Edit failed: after normalizing line endings, 'search' still matched "
+            f"{n_count} times in {path}. Add more context."
+        )
+
+    return (
+        f"Edit failed: 'search' text not found in {path}. "
+        "Call read_file first to copy the exact text (including indentation and blank lines), "
+        "then retry edit_file with the precise match."
+    )
 
 
 @server.tool()
@@ -272,25 +345,35 @@ def apply_patch(patch_content: str, dry_run: bool = False) -> str:
     if not patch_content:
         return "Patch content is required"
 
+    patch_content = patch_content.strip()
+
+    if not patch_content.startswith("diff --git "):
+        return (
+            "Invalid patch: patch must be a complete unified git diff starting with 'diff --git'. "
+            "Regenerate the full patch."
+        )
+
     cmd = ["git", "apply"]
     if dry_run:
         cmd.append("--check")
     cmd.append("-")
 
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=get_repo_root(),
-            input=patch_content,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode == 0:
-            status = "would apply" if dry_run else "applied"
-            return f"Patch {status} successfully"
-        else:
-            return f"Patch failed: {result.stderr}"
-    except Exception as exc:
-        return f"Error applying patch: {exc}"
+    result = subprocess.run(
+        cmd,
+        cwd=get_repo_root(),
+        input=patch_content,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    if result.returncode == 0:
+        return "Patch validated successfully" if dry_run else "Patch applied successfully"
+
+    return (
+        f"Patch failed:\n{result.stderr}\n\n"
+        "The patch was not applied. Regenerate a complete unified diff. "
+        "Do not truncate the patch. Include full file paths, complete hunk headers, "
+        "and all changed lines."
+    )
 
