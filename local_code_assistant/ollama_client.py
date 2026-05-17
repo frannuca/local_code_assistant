@@ -17,7 +17,7 @@ class OllamaConfig:
 
 def clean_schema(schema: Any) -> Any:
     """
-    Strip FastMCP/Pydantic JSON schema down to the subset that Ollama accepts reliably.
+    Strip a JSON schema down to the subset that Ollama accepts reliably.
     """
 
     if isinstance(schema, list):
@@ -85,7 +85,7 @@ def ensure_object_schema(parameters: Any) -> dict[str, Any]:
 
 def to_ollama_tool(tool: dict[str, Any]) -> dict[str, Any]:
     """
-    Convert MCP/FastMCP-style tool schema to Ollama/OpenAI-style function tool schema.
+    Normalize a tool schema dict to the Ollama/OpenAI function-tool shape.
     """
 
     if tool.get("type") == "function" and isinstance(tool.get("function"), dict):

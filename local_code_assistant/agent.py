@@ -79,7 +79,48 @@ class CodeAgent:
         "rewrite",
         "add",
         "remove",
+        "delete",
+        "drop",
+        "clean",
+        "cleanup",
+        "rename",
+        "create",
+        "write",
+        "extract",
+        "replace",
+        "simplify",
+        "restructure",
+        "reorganize",
+        "reorganise",
+        "split",
+        "merge",
+        "convert",
+        "port",
+        "migrate",
+        "rework",
+        "make",
+        "ensure",
+        "enable",
+        "disable",
+        "introduce",
+        "inline",
     }
+
+    # Phrases the model emits when it claims (in text only) to have edited files.
+    # We use this to detect false claims and force a real tool call.
+    EDIT_CLAIM_RE = re.compile(
+        r"\b(?:"
+        r"i(?:'ve| have)?\s+(?:just\s+|now\s+)?"
+        r"(?:modified|updated|changed|edited|wrote|written|added|removed|deleted|"
+        r"refactored|replaced|created|fixed|applied|implemented|renamed|extracted|"
+        r"simplified|cleaned|moved|patched)"
+        r"|the\s+(?:file|code)\s+(?:has\s+been|is\s+now|was)\s+"
+        r"(?:modified|updated|changed|edited|fixed|refactored|written|created)"
+        r"|here(?:'s|\s+is)\s+the\s+(?:modified|updated|new|fixed|refactored|patched|changed)"
+        r"|successfully\s+(?:modified|updated|changed|edited|wrote|added|removed|created|applied|fixed)"
+        r")\b",
+        re.IGNORECASE,
+    )
 
     def __init__(
         self,
@@ -203,7 +244,12 @@ class CodeAgent:
                     "then call edit_file with exact search/replace strings, then git_diff.\n"
                     "Prefer edit_file for existing files. Use write_file only for new files or complete replacement.\n"
                     "apply_patch (unified diff) is a last-resort tool — avoid it when edit_file would work.\n"
-                    "Do not stop after advice when the user asks to change code."
+                    "Do not stop after advice when the user asks to change code.\n"
+                    "CRITICAL: Describing a change in prose does NOT modify any file. "
+                    "Never reply with phrases like 'I have modified...', 'I updated the file...', "
+                    "or 'Here is the new version' unless you have actually called edit_file, "
+                    "write_file, or apply_patch in this turn and the tool returned success. "
+                    "If you have not called an edit tool yet, call one now."
                 ),
             }
         ]
@@ -366,14 +412,24 @@ class CodeAgent:
                 self._log_thinking("Model thinking", last_content)
 
             if not tool_calls:
-                if wants_edit and not made_change:
-                    self._log("[yellow]⚠️  Model didn't call edit tools, requesting patch creation...[/yellow]")
+                claimed_edit = self._looks_like_edit_claim(last_content)
+                if claimed_edit and not made_change:
+                    # Promote to edit-request mode so the force_patch fallback runs
+                    # if the model keeps refusing to call tools.
+                    wants_edit = True
+                if (wants_edit or claimed_edit) and not made_change:
+                    if claimed_edit:
+                        self._log("[yellow]⚠️  Model claimed to edit files in text but called no tool — pushing back...[/yellow]")
+                    else:
+                        self._log("[yellow]⚠️  Model didn't call edit tools, requesting patch creation...[/yellow]")
                     self.messages.append(
                         {
                             "role": "user",
                             "content": (
-                                "You have not modified files yet. Now create a unified diff and call apply_patch. "
-                                "Do not explain. After apply_patch, call git_diff."
+                                "You have not modified any file yet — your previous reply only described changes. "
+                                "Text descriptions do not modify files. You must invoke a tool. "
+                                "Call edit_file (preferred) with exact search/replace strings, or apply_patch with a unified diff. "
+                                "Do not explain. After the edit succeeds, call git_diff."
                             ),
                         }
                     )
@@ -455,6 +511,17 @@ class CodeAgent:
         q = question.lower()
         return any(word in q for word in self.EDIT_KEYWORDS)
 
+    def _looks_like_edit_claim(self, text: str) -> bool:
+        """Detect when the model claims (in prose) to have edited files.
+
+        Local LLMs sometimes describe changes as if they happened without actually
+        calling an edit tool. If we see such a claim with no tool call, we push
+        back instead of returning the bogus 'completion' to the user.
+        """
+        if not text:
+            return False
+        return bool(self.EDIT_CLAIM_RE.search(text))
+
     def _too_many_no_edit_turns(self) -> bool:
         reminders = [
             m
@@ -484,6 +551,10 @@ class CodeAgent:
             "cannot",
             "check passed",
             "would apply",
+            "had no effect",
+            "rejected",
+            "is required",
+            "invalid patch",
         ]
         return not any(token in lower for token in failures)
 
